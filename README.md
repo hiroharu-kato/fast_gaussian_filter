@@ -35,7 +35,8 @@ image_out = fast_gaussian_filter.fast_gaussian_filter(features, points=points)
 ```
 
 From left-to-right: input image, output image by our code, output image by the authors' code.
-
-<img src ="https://raw.githubusercontent.com/hiroharu-kato/fast_gaussian_filter/master/ref/in.jpg" width="30%">
-<img src ="https://raw.githubusercontent.com/hiroharu-kato/fast_gaussian_filter/master/ref/out.jpg" width="30%">
-<img src ="https://raw.githubusercontent.com/hiroharu-kato/fast_gaussian_filter/master/ref/ref.jpg" width="30%">
+<p float="left">
+    <img src ="https://raw.githubusercontent.com/hiroharu-kato/fast_gaussian_filter/master/ref/in.jpg" width="30%">
+    <img src ="https://raw.githubusercontent.com/hiroharu-kato/fast_gaussian_filter/master/ref/out.jpg" width="30%">
+    <img src ="https://raw.githubusercontent.com/hiroharu-kato/fast_gaussian_filter/master/ref/ref.jpg" width="30%">
+</p>

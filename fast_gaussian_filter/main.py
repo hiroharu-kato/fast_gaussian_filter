@@ -318,6 +318,98 @@ class Lattice(object):
         self.lattice_indices_n1 = lattice_indices_n1
         self.lattice_indices_n2 = lattice_indices_n2
 
+    def compute(self, features, forward=True):
+        # features: [bs, num_points, dim_features]
+        # lattice_indices: [bs, num_points, dim_points]
+        # barycentric_weights: [bs, num_points, dim_points]
+        # lattice_indices_nx: [num_lattice_points, dim_points]
+        xp = chainer.cuda.get_array_module(features)
+        bs, num_points, dim_features = features.shape
+        num_lattice_points = self.lattice_indices_n1.shape[0]
+        dim_points = self.lattice_indices.shape[2]
+
+        features = xp.ascontiguousarray(features)
+        lattice_indices = xp.ascontiguousarray(self.lattice_indices)
+        barycentric_weights = xp.ascontiguousarray(self.barycentric_weights)
+
+        # splatting
+        # lattice: [bs, num_lattice_points, dim_features]
+        lattice_features = xp.ascontiguousarray(xp.zeros((bs, num_lattice_points, dim_features), 'float32'))
+        chainer.cuda.elementwise(
+            'raw float32 features, int32 lattice_index, float32 weight, int32 num_lattice_points, raw float32 lattice',
+            '',
+            string.Template('''
+                int bn = i / (${num_points} * ${dim_points});
+                int pn = (i % (${num_points} * ${dim_points})) / ${dim_points};
+                float* feature_p = &features[(bn * ${num_points} + pn) * ${dim_features}];
+                float* lattice_p = &lattice[(bn * num_lattice_points + lattice_index) * ${dim_features}];
+                for (int l = 0; l < ${dim_features}; l++) atomicAdd(lattice_p++, weight * *feature_p++);
+            ''').substitute(
+                num_points=num_points,
+                dim_points=dim_points,
+                dim_features=dim_features,
+            ),
+            'kernel',
+        )(features, lattice_indices.ravel(), barycentric_weights.ravel(), num_lattice_points, lattice_features)
+
+        # blurring
+        if forward:
+            order = range(dim_points)
+        else:
+            order = range(dim_points)[::-1]
+        for i in order:
+            lattice_features_new = xp.ascontiguousarray(xp.zeros_like(lattice_features))
+            lin1 = xp.ascontiguousarray(xp.tile(self.lattice_indices_n1[:, i][None, :], (bs, 1)))
+            lin2 = xp.ascontiguousarray(xp.tile(self.lattice_indices_n2[:, i][None, :], (bs, 1)))
+            chainer.cuda.elementwise(
+                'int32 lin1, int32 lin2, raw float32 lattice, raw float32 lattice_new, int32 num_lattice_points',
+                '',
+                string.Template('''
+                    int bn = i / num_lattice_points;
+                    float* value_p_init = &lattice_new[i * ${dim_features}];
+
+                    float* value_p = value_p_init;
+                    float* value_t_p = &lattice[i * ${dim_features}];
+                    for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.5 * *value_t_p++);
+
+                    if (0 <= lin1) {
+                        float* value_n1_p = &lattice[(bn * num_lattice_points + lin1) * ${dim_features}];
+                        value_p = value_p_init;
+                        for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.25 * *value_n1_p++);
+                    }
+
+                    if (0 <= lin2) {
+                        float* value_n2_p = &lattice[(bn * num_lattice_points + lin2) * ${dim_features}];
+                        value_p = value_p_init;
+                        for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.25 * *value_n2_p++);
+                    }
+                ''').substitute(
+                    dim_features=dim_features,
+                ),
+                'kernel',
+            )(lin1, lin2, lattice_features, lattice_features_new, num_lattice_points)
+            lattice_features = lattice_features_new
+
+        # slicing
+        features_out = xp.zeros_like(features, 'float32')
+        chainer.cuda.elementwise(
+            'raw float32 features, int32 lattice_index, float32 weight, int32 num_lattice_points, raw float32 lattice',
+            '',
+            string.Template('''
+                int bn = i / (${num_points} * ${dim_points});
+                int pn = (i % (${num_points} * ${dim_points})) / ${dim_points};
+                float* feature_p = &features[(bn * ${num_points} + pn) * ${dim_features}];
+                float* lattice_p = &lattice[(bn * num_lattice_points + lattice_index) * ${dim_features}];
+                for (int l = 0; l < ${dim_features}; l++) atomicAdd(feature_p++, weight * *lattice_p++);
+            ''').substitute(
+                num_points=num_points,
+                dim_points=dim_points,
+                dim_features=dim_features,
+            ),
+            'kernel',
+        )(features_out, lattice_indices, barycentric_weights, num_lattice_points, lattice_features)
+        return features_out
+
 
 class FastGaussianFilter(chainer.Function):
     def __init__(self, lattice):
@@ -326,14 +418,18 @@ class FastGaussianFilter(chainer.Function):
 
     def forward_gpu(self, inputs):
         features = inputs[0]
-        features, weights = compute(features, self.lattice)
+        xp = chainer.cuda.get_array_module(features)
+        features = xp.concatenate((features, xp.ones((features.shape[0], features.shape[1], 1), 'float32')), axis=2)
+        features = self.lattice.compute(features)
+        features, weights = features[:, :, :-1], features[:, :, -1]
+        features = features / (weights[:, :, None] + 1e-6)
         self.weights = weights
         return features,
 
     def backward_gpu(self, inputs, grad_outputs):
         grad_output = grad_outputs[0]
         grad_output = grad_output / self.weights[:, :, None]
-        grad_input, weights = compute(grad_output, self.lattice, forward=False)
+        grad_input = self.lattice.compute(grad_output, forward=False)
         return grad_input,
 
     def forward_cpu(self, inputs):

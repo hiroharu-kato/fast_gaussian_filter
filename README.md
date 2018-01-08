@@ -8,6 +8,10 @@ This code supports derivative of the output image with respect to the input imag
 
 ## Installation
 
+```sh
+sudo python setup.py install
+```
+
 ## Example
 
 ```python

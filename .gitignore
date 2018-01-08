@@ -1,5 +1,10 @@
 .idea
 *~
 *.pyc
-UNKNOWN.egg-info
 .DS_Store
+
+UNKNOWN.egg-info
+build
+dist
+fast_gaussian_filter.egg-info
+

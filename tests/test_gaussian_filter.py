@@ -49,9 +49,9 @@ class TestFastGaussianFilter(unittest.TestCase):
             print 'time (3-%d)' % i, te - ts
 
         diff = image_in - image_out.data.get()
-        print 'diff_in', np.square(diff).sum()
+        print 'diff_in', np.square(diff).mean()
         diff = image_ref - image_out.data.get()
-        print 'diff_out', np.square(diff).sum()
+        print 'diff_out', np.square(diff).mean()
 
         scipy.misc.toimage(image_out.data.get(), cmin=0, cmax=1).save('./ref/out.jpg')
 
@@ -102,9 +102,9 @@ class TestFastGaussianFilter(unittest.TestCase):
         image_out = image_out.reshape((2, image_in.shape[0], image_in.shape[1], image_in.shape[2]))[1]
 
         diff = image_in - image_out.data.get()
-        print 'diff_in', np.square(diff).sum()
+        print 'diff_in', np.square(diff).mean()
         diff = image_ref - image_out.data.get()
-        print 'diff_out', np.square(diff).sum()
+        print 'diff_out', np.square(diff).mean()
 
 
 if __name__ == '__main__':

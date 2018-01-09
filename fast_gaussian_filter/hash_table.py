@@ -5,23 +5,24 @@ import cupy as cp
 
 
 class HashMap(object):
-    def __init__(self, data):
-        self.table_size = 2 ** 24
+    def __init__(self, data, table_size=2 ** 24):
+        xp = chainer.cuda.get_array_module(data)
         self.hash_factor = 2531011
-        self.dim = data.shape[-1]
+        self.batch_size, self.num_points, self.dim = data.shape
+        self.table_size = table_size
 
-        self.indices = cp.ascontiguousarray(cp.zeros((self.table_size,), 'int32')) - 1
-        self.values = cp.ascontiguousarray(cp.zeros((self.table_size, self.dim), 'int32'))
-        self.value_list = cp.ascontiguousarray(cp.zeros((self.table_size, self.dim), 'int32'))
+        self.indices = cp.ascontiguousarray(cp.zeros((self.batch_size, self.table_size,), 'int32')) - 1
+        self.values = cp.ascontiguousarray(cp.zeros((self.batch_size, self.table_size, self.dim), 'int32'))
+        self.value_list = cp.ascontiguousarray(cp.zeros((self.batch_size, self.table_size, self.dim), 'int32'))
         self.size = None
 
         self.init_keys(data)
 
     def init_keys(self, data):
         data = cp.ascontiguousarray(data)
-        used = cp.ascontiguousarray(cp.zeros((self.table_size,), 'int32'))
-        written = cp.ascontiguousarray(cp.zeros((self.table_size,), 'int32'))
-        count = cp.ascontiguousarray(cp.zeros((1,), 'int32'))
+        used = cp.ascontiguousarray(cp.zeros((self.batch_size, self.table_size), 'int32'))
+        written = cp.ascontiguousarray(cp.zeros((self.batch_size, self.table_size), 'int32'))
+        count = cp.ascontiguousarray(cp.zeros((self.batch_size,), 'int32'))
         loop_indices = cp.arange(data.size / self.dim).astype('int32')
 
         chainer.cuda.elementwise(
@@ -32,6 +33,7 @@ class HashMap(object):
                 int* value_init;
                 int* value;
                 value_init = &data[i * ${dim}];
+                int bn = i / ${num_points};
 
                 /* compute initial key */
                 unsigned int key = 0;
@@ -42,28 +44,28 @@ class HashMap(object):
                 while (true) {
                     /* check if the key is used */
                     int ret;
-                    ret = used[key];
-                    if (ret == 0) ret = atomicExch(&used[key], 1);
+                    ret = used[bn * ${table_size} + key];
+                    if (ret == 0) ret = atomicExch(&used[bn * ${table_size} + key], 1);
 
                     if (ret == 0) {
                         /* register true key */
-                        int* value_ref = &values[key * ${dim}];
+                        int* value_ref = &values[(bn * ${table_size} + key) * ${dim}];
                         value = value_init;
                         for (int k = 0; k < ${dim}; k++) *value_ref++ = *value++;
-                        written[key] = 1;
+                        written[bn * ${table_size} + key] = 1;
 
-                        int num = atomicAdd(&count[0], 1);
-                        indices[key] = num;
+                        int num = atomicAdd(&count[bn], 1);
+                        indices[bn * ${table_size} + key] = num;
 
-                        value_ref = &value_list[num * ${dim}];
+                        value_ref = &value_list[(bn * ${table_size} + num) * ${dim}];
                         value = value_init;
                         for (int k = 0; k < ${dim}; k++) *value_ref++ = *value++;
 
                         break;
                     } else {
                         bool match = true;
-                        while (atomicAdd(&written[key], 0) == 0) {}
-                        int* value_ref = &values[key * ${dim}];
+                        while (atomicAdd(&written[bn * ${table_size} + key], 0) == 0) {}
+                        int* value_ref = &values[(bn * ${table_size} + key) * ${dim}];
                         value = value_init;
                         for (int k = 0; k < ${dim}; k++) if (*value_ref++ != *value++) match = false;
                         if (match) {
@@ -76,11 +78,12 @@ class HashMap(object):
             ''').substitute(
                 table_size=self.table_size,
                 hash_factor=self.hash_factor,
+                num_points=self.num_points,
                 dim=self.dim,
             ),
             'kernel',
         )(loop_indices, data, self.indices, self.values, self.value_list, used, written, count)
-        self.size = int(count[0])
+        self.size = int(count.max())
 
     def find(self, data):
         ret = cp.ascontiguousarray(cp.zeros(data.shape[:-1], 'int32')) - 1
@@ -92,6 +95,7 @@ class HashMap(object):
             string.Template('''
                 /* */
                 int* value = &data[j * ${dim}];
+                int bn = i / ${num_points};
 
                 /* compute initial key */
                 unsigned int key = 0;
@@ -99,14 +103,16 @@ class HashMap(object):
                 key = key % ${table_size};
 
                 while (1) {
-                    if (indices[key] < 0) {
+                    if (indices[bn * ${table_size} + key] < 0) {
                         ret[j] = -1;
                         break;
                     }
                     bool match = true;
-                    for (int k = 0; k < ${dim}; k++) if (values[key * ${dim} + k] != value[k]) match = false;
+                    for (int k = 0; k < ${dim}; k++)
+                        if (values[(bn * ${table_size} + key) * ${dim} + k] != value[k])
+                            match = false;
                     if (match) {
-                        ret[j] = indices[key];
+                        ret[j] = indices[bn * ${table_size} + key];
                         break;
                     } else {
                         key = (key + 1) % ${table_size};
@@ -115,6 +121,7 @@ class HashMap(object):
             ''').substitute(
                 table_size=self.table_size,
                 hash_factor=self.hash_factor,
+                num_points=data.shape[1],
                 dim=self.dim,
             ),
             'function',

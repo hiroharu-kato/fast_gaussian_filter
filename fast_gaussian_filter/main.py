@@ -299,19 +299,20 @@ class Lattice(object):
         barycentric_weights = compute_weights(xp, points, reminder_zero_points, dim)
         canonical = get_canonical_simplex(xp, dim)
         lattice_points = canonical[:, rank].transpose((1, 2, 0, 3)) + reminder_zero_points[:, :, None, :]
-        hash = hash_table.HashMap(lattice_points.reshape((-1, dim + 1, dim + 1)))
-        lattice_indices = hash.find(lattice_points)
-        lattice_indices_n1 = xp.zeros((hash.size, dim + 1), 'int32') - 1
-        lattice_indices_n2 = xp.zeros((hash.size, dim + 1), 'int32') - 1
+        lattice_points = lattice_points.reshape((lattice_points.shape[0], -1, dim + 1))
+        hash = hash_table.HashMap(lattice_points)
+        lattice_indices = hash.find(lattice_points).reshape((bs, num_points, dim + 1))
+        lattice_indices_n1 = xp.zeros((bs, hash.size, dim + 1), 'int32') - 1
+        lattice_indices_n2 = xp.zeros((bs, hash.size, dim + 1), 'int32') - 1
 
-        lattice_list = hash.value_list[:hash.size]
+        lattice_list = hash.value_list[:, :hash.size]
         for d in range(dim + 1):
             li = xp.copy(lattice_list) - 1
-            li[:, d] += dim + 1
-            lattice_indices_n1[:, d] = hash.find(li)
+            li[:, :, d] += dim + 1
+            lattice_indices_n1[:, :, d] = hash.find(li)
             li = xp.copy(lattice_list) + 1
-            li[:, d] -= dim + 1
-            lattice_indices_n2[:, d] = hash.find(li)
+            li[:, :, d] -= dim + 1
+            lattice_indices_n2[:, :, d] = hash.find(li)
 
         self.lattice_indices = lattice_indices
         self.barycentric_weights = barycentric_weights
@@ -325,7 +326,7 @@ class Lattice(object):
         # lattice_indices_nx: [num_lattice_points, dim_points]
         xp = chainer.cuda.get_array_module(features)
         bs, num_points, dim_features = features.shape
-        num_lattice_points = self.lattice_indices_n1.shape[0]
+        num_lattice_points = self.lattice_indices_n1.shape[1]
         dim_points = self.lattice_indices.shape[2]
 
         features = xp.ascontiguousarray(features)
@@ -359,8 +360,8 @@ class Lattice(object):
             order = range(dim_points)[::-1]
         for i in order:
             lattice_features_new = xp.ascontiguousarray(xp.zeros_like(lattice_features))
-            lin1 = xp.ascontiguousarray(xp.tile(self.lattice_indices_n1[:, i][None, :], (bs, 1)))
-            lin2 = xp.ascontiguousarray(xp.tile(self.lattice_indices_n2[:, i][None, :], (bs, 1)))
+            lin1 = xp.ascontiguousarray(self.lattice_indices_n1[:, :, i])
+            lin2 = xp.ascontiguousarray(self.lattice_indices_n2[:, :, i])
             chainer.cuda.elementwise(
                 'int32 lin1, int32 lin2, raw float32 lattice, raw float32 lattice_new, int32 num_lattice_points',
                 '',

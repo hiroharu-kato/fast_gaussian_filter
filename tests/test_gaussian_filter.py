@@ -1,10 +1,10 @@
-import numpy as np
-import scipy.misc
 import time
 import unittest
 
 import chainer
 import chainer.gradient_check
+import numpy as np
+import scipy.misc
 
 import fast_gaussian_filter
 
@@ -105,6 +105,34 @@ class TestFastGaussianFilter(unittest.TestCase):
         print 'diff_in', np.square(diff).mean()
         diff = image_ref - image_out.data.get()
         print 'diff_out', np.square(diff).mean()
+
+    def test_forward3(self):
+        # high-dimension
+        std_spatial = 5
+        std_color = 0.125
+        image_in = scipy.misc.imread('./ref/in.jpg').astype('float32') / 255.
+        y, x = np.meshgrid(np.arange(image_in.shape[0]), np.arange(image_in.shape[1]), indexing='ij')
+        points = np.concatenate((x[:, :, None], y[:, :, None], image_in), axis=-1)
+        points[:, :, :2] /= std_spatial
+        points[:, :, 2:] /= std_color
+
+        points = points.reshape((1, -1, 5))
+        features = np.random.random(size=(image_in.shape[0], image_in.shape[1], 16))
+        features = features.reshape((1, -1, features.shape[-1]))
+        points = np.tile(points, (2, 1, 1))
+        features = np.tile(features, (2, 1, 1))
+        points[0] = 0
+        features[0] = 0
+        points = chainer.cuda.to_gpu(points).astype('float32')
+        features = chainer.cuda.to_gpu(features).astype('float32')
+
+        lattice = fast_gaussian_filter.Lattice(points, hash_size=2 ** 20)
+        print lattice.lattice_indices.shape
+        ts = time.time()
+        features_out = fast_gaussian_filter.fast_gaussian_filter(features, points=points)
+        print features_out[0, 0]
+        te = time.time()
+        print '1024', te - ts
 
 
 if __name__ == '__main__':

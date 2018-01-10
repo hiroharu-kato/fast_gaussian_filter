@@ -72,7 +72,6 @@ def sort(data):
 def sort2(data):
     # argsort(argsort(data))
     xp = chainer.cuda.get_array_module(data)
-    data = xp.copy(data)
     dim = data.shape[-1]
     indices = xp.zeros_like(data, dtype='int32')
     chainer.cuda.elementwise(
@@ -154,8 +153,10 @@ def get_projection_matrix(xp, dim):
 
 def compute_rzp_rank(xp, features, dim):
     reminder_zero_points = xp.rint(features / (dim + 1)).astype('int32') * (dim + 1)
-    # rank = xp.argsort(xp.argsort(-(features - reminder_zero_points), axis=-1), axis=-1)
-    rank = sort2(-(features - reminder_zero_points).astype('float32'))
+    if dim < 10:
+        rank = sort2(-(features - reminder_zero_points).astype('float32'))
+    else:
+        rank = xp.argsort(xp.argsort(-(features - reminder_zero_points), axis=-1), axis=-1)
     sum_rzp = (reminder_zero_points / (dim + 1)).sum(-1)
     rank += sum_rzp[:, :, None]
 
@@ -169,8 +170,10 @@ def compute_rzp_rank(xp, features, dim):
 
 def compute_weights(xp, features, reminder_zero_points, dim):
     # create b in p.5 of [Adam+ 2009]
-    # y = xp.sort(features - reminder_zero_points, -1)[:, :, ::-1].astype('float32')
-    y = sort((features - reminder_zero_points).astype('float32'))[:, :, ::-1].astype('float32')
+    if dim < 10:
+        y = sort((features - reminder_zero_points).astype('float32'))[:, :, ::-1].astype('float32')
+    else:
+        y = xp.sort(features - reminder_zero_points, -1)[:, :, ::-1].astype('float32')
     b = (y[:, :, :-1] - y[:, :, 1:])[:, :, ::-1] / (dim + 1)
     b = xp.concatenate(((1 - b.sum(-1))[:, :, None], b), axis=-1)
 
@@ -387,6 +390,7 @@ class Lattice(object):
             order = range(dim_points)
         else:
             order = range(dim_points)[::-1]
+
         for i in order:
             lin1 = xp.ascontiguousarray(self.lattice_indices_n1[:, :, i])
             lin2 = xp.ascontiguousarray(self.lattice_indices_n2[:, :, i])

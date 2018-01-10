@@ -129,11 +129,11 @@ class TestFastGaussianFilter(unittest.TestCase):
         features = chainer.cuda.to_gpu(features).astype('float32')
 
         lattice = fast_gaussian_filter.Lattice(points, hash_size=2 ** 20)
-        features_out = fast_gaussian_filter.fast_gaussian_filter(features, points=points)
+        features_out = fast_gaussian_filter.fast_gaussian_filter(features, lattice=lattice)
         print features_out[0, 0, 0]
 
         ts = time.time()
-        features_out = fast_gaussian_filter.fast_gaussian_filter(features, points=points)
+        features_out = fast_gaussian_filter.fast_gaussian_filter(features, lattice=lattice)
         print features_out[0, 0, 0]
         te = time.time()
         print dim, te - ts

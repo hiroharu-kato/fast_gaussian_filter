@@ -1,0 +1,10 @@
+.idea
+*~
+*.pyc
+.DS_Store
+
+UNKNOWN.egg-info
+build
+dist
+fast_gaussian_filter.egg-info
+

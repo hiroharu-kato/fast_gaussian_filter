@@ -338,7 +338,7 @@ class Lattice(object):
         # splatting
         # lattice: [bs, num_lattice_points, dim_features]
         lattice_features = xp.ascontiguousarray(xp.zeros((bs, num_lattice_points, dim_features), 'float32'))
-        if dim_features < 100:
+        if True:
             chainer.cuda.elementwise(
                 'raw float32 features, int32 lattice_index, float32 weight, int32 num_lattice_points, ' +
                 'raw float32 lattice',
@@ -348,7 +348,9 @@ class Lattice(object):
                     int pn = (i % (${num_points} * ${dim_points})) / ${dim_points};
                     float* feature_p = &features[(bn * ${num_points} + pn) * ${dim_features}];
                     float* lattice_p = &lattice[(bn * num_lattice_points + lattice_index) * ${dim_features}];
-                    for (int l = 0; l < ${dim_features}; l++) atomicAdd(lattice_p++, weight * *feature_p++);
+                    // slow
+                    // for (int l = 0; l < ${dim_features}; l++) atomicAdd(lattice_p++, weight * *feature_p++);
+                    for (int l = 0; l < ${dim_features}; l++) atomicAdd(&lattice_p[l], weight * feature_p[l]);
                 ''').substitute(
                     num_points=num_points,
                     dim_points=dim_points,
@@ -357,9 +359,11 @@ class Lattice(object):
                 'kernel',
             )(features, lattice_indices, barycentric_weights, num_lattice_points, lattice_features)
         else:
+            # slow
             loop_indices = xp.arange(lattice_indices.size * dim_features).astype('int32')
             chainer.cuda.elementwise(
-                'int32 j, raw float32 features, raw int32 lattice_indices, raw float32 weights, int32 num_lattice_points, raw float32 lattice',
+                'int32 j, raw float32 features, raw int32 lattice_indices, raw float32 weights, ' +
+                'int32 num_lattice_points, raw float32 lattice',
                 '',
                 string.Template('''
                     int bn = i / (${num_points} * ${dim_points} * ${dim_features});
@@ -384,34 +388,58 @@ class Lattice(object):
         else:
             order = range(dim_points)[::-1]
         for i in order:
-            lattice_features_new = lattice_features * 0.5
             lin1 = xp.ascontiguousarray(self.lattice_indices_n1[:, :, i])
             lin2 = xp.ascontiguousarray(self.lattice_indices_n2[:, :, i])
-            chainer.cuda.elementwise(
-                'int32 lin1, int32 lin2, raw float32 lattice, raw float32 lattice_new, int32 num_lattice_points',
-                '',
-                string.Template('''
-                    int bn = i / num_lattice_points;
-                    float* value_p_init = &lattice_new[i * ${dim_features}];
-                    float* value_p;
+            if True:
+                lattice_features_new = lattice_features * 0.5
+                chainer.cuda.elementwise(
+                    'int32 lin1, int32 lin2, raw float32 lattice, raw float32 lattice_new, int32 num_lattice_points',
+                    '',
+                    string.Template('''
+                        int bn = i / num_lattice_points;
+                        float* value_p_init = &lattice_new[i * ${dim_features}];
+                        float* value_p;
 
-                    if (0 <= lin1) {
-                        float* value_n1_p = &lattice[(bn * num_lattice_points + lin1) * ${dim_features}];
-                        value_p = value_p_init;
-                        for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.25 * *value_n1_p++);
-                    }
+                        if (0 <= lin1) {
+                            float* value_n1_p = &lattice[(bn * num_lattice_points + lin1) * ${dim_features}];
+                            value_p = value_p_init;
+                            for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.25 * *value_n1_p++);
+                        }
 
-                    if (0 <= lin2) {
-                        float* value_n2_p = &lattice[(bn * num_lattice_points + lin2) * ${dim_features}];
-                        value_p = value_p_init;
-                        for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.25 * *value_n2_p++);
-                    }
-                ''').substitute(
-                    dim_features=dim_features,
-                ),
-                'kernel',
-            )(lin1, lin2, lattice_features, lattice_features_new, num_lattice_points)
-            lattice_features = lattice_features_new
+                        if (0 <= lin2) {
+                            float* value_n2_p = &lattice[(bn * num_lattice_points + lin2) * ${dim_features}];
+                            value_p = value_p_init;
+                            for (int l = 0; l < ${dim_features}; l++) atomicAdd(value_p++, 0.25 * *value_n2_p++);
+                        }
+                    ''').substitute(
+                        dim_features=dim_features,
+                    ),
+                    'kernel',
+                )(lin1, lin2, lattice_features, lattice_features_new, num_lattice_points)
+                lattice_features = lattice_features_new
+            else:
+                # slow
+                loop_indices = xp.arange(lin1.size * dim_features).astype('int32')
+                s1 = chainer.cuda.elementwise(
+                    'int32 j, raw int32 lins1, raw int32 lins2, raw float32 lattice, int32 num_lattice_points',
+                    'float32 ret',
+                    string.Template('''
+                        int bn = i / (num_lattice_points * ${dim_features});
+                        int li = i / ${dim_features};
+                        int dim = i % ${dim_features};
+                        int lin1 = lins1[li];
+                        int lin2 = lins2[li];
+
+                        ret = 0;
+                        if (0 <= lin1) ret += lattice[(bn * num_lattice_points + lin1) * ${dim_features} + dim];
+                        if (0 <= lin2) ret += lattice[(bn * num_lattice_points + lin2) * ${dim_features} + dim];
+                    ''').substitute(
+                        dim_features=dim_features,
+                    ),
+                    'kernel',
+                )(loop_indices, lin1, lin2, lattice_features, num_lattice_points)
+                s1 = s1.reshape(lattice_features.shape)
+                lattice_features = 0.5 * lattice_features + 0.25 * s1
 
         # slicing
         features_out = xp.zeros_like(features, 'float32')

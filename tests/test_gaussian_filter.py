@@ -108,16 +108,18 @@ class TestFastGaussianFilter(unittest.TestCase):
 
     def test_forward3(self):
         # high-dimension
+        dim = 64
         std_spatial = 5
         std_color = 0.125
         image_in = scipy.misc.imread('./ref/in.jpg').astype('float32') / 255.
+        image_in = image_in[:256, :256]
         y, x = np.meshgrid(np.arange(image_in.shape[0]), np.arange(image_in.shape[1]), indexing='ij')
         points = np.concatenate((x[:, :, None], y[:, :, None], image_in), axis=-1)
         points[:, :, :2] /= std_spatial
         points[:, :, 2:] /= std_color
 
         points = points.reshape((1, -1, 5))
-        features = np.random.random(size=(image_in.shape[0], image_in.shape[1], 16))
+        features = np.random.random(size=(image_in.shape[0], image_in.shape[1], dim))
         features = features.reshape((1, -1, features.shape[-1]))
         points = np.tile(points, (2, 1, 1))
         features = np.tile(features, (2, 1, 1))
@@ -127,12 +129,14 @@ class TestFastGaussianFilter(unittest.TestCase):
         features = chainer.cuda.to_gpu(features).astype('float32')
 
         lattice = fast_gaussian_filter.Lattice(points, hash_size=2 ** 20)
-        print lattice.lattice_indices.shape
+        features_out = fast_gaussian_filter.fast_gaussian_filter(features, points=points)
+        print features_out[0, 0, 0]
+
         ts = time.time()
         features_out = fast_gaussian_filter.fast_gaussian_filter(features, points=points)
-        print features_out[0, 0]
+        print features_out[0, 0, 0]
         te = time.time()
-        print '1024', te - ts
+        print dim, te - ts
 
 
 if __name__ == '__main__':
